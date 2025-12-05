@@ -1,0 +1,67 @@
+## Stage 1: Build Frontend from Git Repository
+FROM node:22-alpine AS frontend-build
+WORKDIR /frontend
+
+# Build argument for frontend repository URL and token
+ARG FRONTEND_REPO_URL=https://github.com/felipeesser/projetotestefront.git
+ARG GITHUB_TOKEN
+
+# Clone frontend repository (privado - requer token)
+RUN apk add --no-cache git && \
+    if [ -n "$GITHUB_TOKEN" ]; then \
+        git clone https://${GITHUB_TOKEN}@github.com/felipeesser/projetotestefront.git /frontend; \
+    else \
+        git clone ${FRONTEND_REPO_URL} /frontend; \
+    fi
+
+# Install dependencies and build
+RUN npm ci --prefer-offline --no-audit
+RUN npm run build
+
+## Stage 2: Build Backend with Native Image
+FROM quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21 AS backend-build
+COPY --chown=quarkus:quarkus --chmod=0755 mvnw /code/mvnw
+COPY --chown=quarkus:quarkus .mvn /code/.mvn
+COPY --chown=quarkus:quarkus pom.xml /code/
+USER quarkus
+WORKDIR /code
+
+# Download dependencies
+RUN ./mvnw -B org.apache.maven.plugins:maven-dependency-plugin:3.8.1:go-offline
+
+# Copy source code
+COPY --chown=quarkus:quarkus src /code/src
+
+# Copy frontend build to backend resources
+# Angular v17+ usa browser/ subdirectory
+RUN mkdir -p /code/src/main/resources/META-INF/resources
+COPY --from=frontend-build /frontend/dist/teste-quarkus-sgbd/browser /code/src/main/resources/META-INF/resources
+
+# Build native executable (H2 é padrão em application.properties)
+RUN ./mvnw package -Dnative -DskipTests
+
+## Stage 3: Create Final Runtime Image
+FROM quay.io/quarkus/quarkus-micro-image:2.0
+WORKDIR /work/
+
+# Copy the native executable
+COPY --from=backend-build /code/target/*-runner /work/application
+
+# Set up permissions for user `1001`
+RUN chmod 775 /work /work/application \
+  && chown -R 1001 /work \
+  && chmod -R "g+rwX" /work \
+  && chown -R 1001:root /work
+
+# Expose port (Render.com usa PORT env var)
+EXPOSE 8080
+
+# Use non-root user
+USER 1001
+
+# Environment variables (H2 é padrão, mas pode ser sobrescrito)
+ENV QUARKUS_HTTP_HOST=0.0.0.0 \
+    QUARKUS_HTTP_PORT=8080
+
+# Run the application
+CMD ["./application"]
