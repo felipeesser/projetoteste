@@ -27,6 +27,11 @@ public class JwtAuthenticationFilter implements ContainerRequestFilter {
             path = path.substring(1);
         }
         
+        // Permitir acesso a arquivos estáticos e rotas SPA (não começam com "api/")
+        if(!path.startsWith("api/")) {
+            return;
+        }
+        
         // Permitir apenas rotas de autenticação específicas (públicas)
         if(path.equals("api/auth/has-admin") || 
            path.equals("api/auth/login") || 
